@@ -14,8 +14,28 @@ from datetime import datetime
 import json
 import os
 
-import win32com.client
-import pythoncom
+try:
+    import win32com.client
+    import pythoncom
+except ImportError:
+    logging.critical(
+        "win32com.client 또는 pythoncom 모듈을 사용할 수 없습니다. "
+        "이 프로그램은 Windows에서만 동작하며 Creon Plus와 pywin32가 설치되어 있어야 합니다."
+    )
+    if QApplication.instance() is not None:
+        QMessageBox.critical(
+            None,
+            "환경 오류",
+            "win32com.client 또는 pythoncom 모듈을 사용할 수 없습니다.\n"
+            "Windows용 pywin32와 Creon Plus가 설치되어 있는지 확인하세요.",
+        )
+    else:
+        print(
+            "[오류] win32com.client 또는 pythoncom 모듈을 불러올 수 없습니다. "
+            "Windows에서만 실행 가능합니다.",
+            file=sys.stderr,
+        )
+    sys.exit(1)
 import threading
 import logging
 import queue
@@ -377,7 +397,6 @@ QComboBox::drop-down {
     border: none;
 }
 QComboBox::down-arrow {
-    image: url(down_arrow.png); /* For better visibility */
     width: 12px;
     height: 12px;
 }
@@ -1133,8 +1152,7 @@ class TradingWorker(QThread):
                 
         except Exception as e:
             self.log_signal.emit(f"[{self.code}] 처리 오류: {e}", "ERROR")
-            import traceback
-            traceback.print_exc()
+            logging.exception(f"[{self.code}] 예외 발생")
         finally:
             pythoncom.CoUninitialize()
             self.log_signal.emit(f"[{self.code}] 스레드 종료", "INFO")
@@ -1270,10 +1288,11 @@ class TradingWorker(QThread):
 # 교체할 클래스: TradingManager
 class TradingManager:
     """Manages multiple TradingWorker threads."""
-    def __init__(self, creon_mgr: CreonManager, status_panel: StatusPanel):
+    def __init__(self, creon_mgr: CreonManager, status_panel: StatusPanel, refresh_callback=None):
         self.creon = creon_mgr
         self.status_panel = status_panel
-        self.workers = {} # {code: TradingWorker instance}
+        self.refresh_callback = refresh_callback
+        self.workers = {}  # {code: TradingWorker instance}
         self.is_auto_trading_active = False
 
     def start_trading(self, strategy_data: dict, selected_codes: list):
@@ -1325,8 +1344,9 @@ class TradingManager:
         self.status_panel.add_log("모든 자동매매 스레드가 중지되었습니다.", "INFO")
 
     def _handle_trade_signal(self, code: str):
-        # 이 시그널은 MainWindow의 refresh_prices_for_code에 연결되어 잔고/수익률 등을 갱신함
-        main_window.refresh_prices_for_code(code)
+        # 매매 체결 후 잔고/수익률 갱신을 위해 호출되는 콜백
+        if callable(self.refresh_callback):
+            self.refresh_callback(code)
 
 
 # 교체할 클래스: MainWindow
@@ -1347,7 +1367,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._setup_connections()
         
-        self.trading_manager = TradingManager(self.creon, self.status_panel)
+        self.trading_manager = TradingManager(self.creon, self.status_panel, self.refresh_prices_for_code)
 
         self.connect_creon()
         # <<< [추가] 크레온 연결 후 실시간 시그널 연결
@@ -1815,7 +1835,6 @@ class MainWindow(QMainWindow):
 # main 함수는 변경 없음
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    # <<< [추가] MainWindow 인스턴스를 전역에서 접근 가능하도록 설정
     main_window = MainWindow()
     main_window.show()
     sys.exit(app.exec_())
