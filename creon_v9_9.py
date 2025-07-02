@@ -13,6 +13,7 @@ from PyQt5.QtGui import QFont, QPalette, QColor, QIcon
 from datetime import datetime
 import json
 import os
+import logging
 
 try:
     import win32com.client
@@ -37,7 +38,6 @@ except ImportError:
         )
     sys.exit(1)
 import threading
-import logging
 import queue
 import time
 com_lock = threading.Lock()
@@ -76,7 +76,9 @@ class CreonManager(QObject):
             try:
                 # com_lock을 사용해 여러 스레드에서의 동시 접근을 방지합니다.
                 with com_lock:
-                    market = self.cp_code_mgr.GetMarketKind(code)
+                    # NOTE: COM 객체는 호출되는 스레드에서 생성해야 하므로 여기서 새로 생성한다
+                    local_mgr = win32com.client.Dispatch("CpUtil.CpCodeMgr")
+                    market = local_mgr.GetMarketKind(code)
                     self.market_cache[code] = market
             except Exception as e:
                 logging.error(f"[{code}] 시장 구분 정보 조회 실패: {e}")
@@ -246,23 +248,24 @@ class CreonManager(QObject):
             if not code.startswith("A"):
                 code = "A" + code
             try:
-                self.stock_chart.SetInputValue(0, code)
-                self.stock_chart.SetInputValue(1, ord('2'))     # 기간
-                self.stock_chart.SetInputValue(2, days)         # 최근 days개
-                self.stock_chart.SetInputValue(3, ord('2'))     # 종가만
-                self.stock_chart.SetInputValue(5, [0])          # 0: 종가
-                self.stock_chart.SetInputValue(6, ord('D'))     # 일봉
-                self.stock_chart.SetInputValue(9, ord('1'))     # 수정주가
-                self.stock_chart.BlockRequest()
-                cnt = self.stock_chart.GetHeaderValue(3)
+                chart = win32com.client.Dispatch("CpSysDib.StockChart")
+                chart.SetInputValue(0, code)
+                chart.SetInputValue(1, ord('2'))     # 기간
+                chart.SetInputValue(2, days)         # 최근 days개
+                chart.SetInputValue(3, ord('2'))     # 종가만
+                chart.SetInputValue(5, [0])          # 0: 종가
+                chart.SetInputValue(6, ord('D'))     # 일봉
+                chart.SetInputValue(9, ord('1'))     # 수정주가
+                chart.BlockRequest()
+                cnt = chart.GetHeaderValue(3)
                 for i in range(cnt):
-                    close = self.stock_chart.GetDataValue(0, i)
+                    close = chart.GetDataValue(0, i)
                     if close > 0:
                         return close
                 return 0
             except Exception as e:
                 logging.error(f"종가 조회 오류({code}): {e}")
-                return 0        
+                return 0
 
     def get_stock_name(self, code: str) -> str:
         if not self.is_initialized:
@@ -275,18 +278,19 @@ class CreonManager(QObject):
         with com_lock:
             if not code.startswith("A"):
                 code = "A" + code
-            self.cp_stock.SetInputValue(0, code)
-            self.cp_stock.BlockRequest()
-            
+            stock = win32com.client.Dispatch("DsCbo1.StockMst")
+            stock.SetInputValue(0, code)
+            stock.BlockRequest()
+
             # StockCur가 주는 데이터와 필드명을 최대한 일치시킴
             return {
                 "code": code,
-                "current_price": self.cp_stock.GetHeaderValue(11),
-                "high_price": self.cp_stock.GetHeaderValue(14),
-                "low_price": self.cp_stock.GetHeaderValue(15),
-                "close_price": self.cp_stock.GetHeaderValue(11), # 종가
-                "volume": self.cp_stock.GetHeaderValue(18),       
-                "trade_value": self.cp_stock.GetHeaderValue(19)  
+                "current_price": stock.GetHeaderValue(11),
+                "high_price": stock.GetHeaderValue(14),
+                "low_price": stock.GetHeaderValue(15),
+                "close_price": stock.GetHeaderValue(11), # 종가
+                "volume": stock.GetHeaderValue(18),
+                "trade_value": stock.GetHeaderValue(19)
             }
 
     def get_stock_balance_and_avg_price(self, code: str) -> Tuple[int, int]:
@@ -319,16 +323,17 @@ class CreonManager(QObject):
             if not code.startswith("A"):
                 code = "A" + code
             try:
-                self.stock_chart.SetInputValue(0, code)
-                self.stock_chart.SetInputValue(1, ord('2'))     # 기간으로 요청
-                self.stock_chart.SetInputValue(2, days + 1)     # N+1개(오늘 포함)
-                self.stock_chart.SetInputValue(3, ord('1'))     # 1: 고가만
-                self.stock_chart.SetInputValue(5, [2])          # 2: 고가
-                self.stock_chart.SetInputValue(6, ord('D'))     # 일봉
-                self.stock_chart.SetInputValue(9, ord('1'))     # 수정주가
-                self.stock_chart.BlockRequest()
-                cnt = self.stock_chart.GetHeaderValue(3)
-                highs = [self.stock_chart.GetDataValue(0, i) for i in range(cnt)]
+                chart = win32com.client.Dispatch("CpSysDib.StockChart")
+                chart.SetInputValue(0, code)
+                chart.SetInputValue(1, ord('2'))     # 기간으로 요청
+                chart.SetInputValue(2, days + 1)     # N+1개(오늘 포함)
+                chart.SetInputValue(3, ord('1'))     # 1: 고가만
+                chart.SetInputValue(5, [2])          # 2: 고가
+                chart.SetInputValue(6, ord('D'))     # 일봉
+                chart.SetInputValue(9, ord('1'))     # 수정주가
+                chart.BlockRequest()
+                cnt = chart.GetHeaderValue(3)
+                highs = [chart.GetDataValue(0, i) for i in range(cnt)]
                 if len(highs) > 1:
                     return max(highs[1:days+1])
                 return 0
@@ -344,29 +349,30 @@ class CreonManager(QObject):
             if not code.startswith("A"):
                 code = "A" + code
             try:
-                self.stock_chart.SetInputValue(0, code)
-                self.stock_chart.SetInputValue(1, ord('2'))         # 기간 기준
-                self.stock_chart.SetInputValue(2, days + 1)         # 오늘 포함 N+1일 조회
-                self.stock_chart.SetInputValue(3, ord('3'))         # 요청 필드: 저가
-                self.stock_chart.SetInputValue(5, [3])              # 필드 코드: 저가
-                self.stock_chart.SetInputValue(6, ord('D'))         # 일봉
-                self.stock_chart.SetInputValue(9, ord('1'))         # 수정주가
-                self.stock_chart.BlockRequest()
+                chart = win32com.client.Dispatch("CpSysDib.StockChart")
+                chart.SetInputValue(0, code)
+                chart.SetInputValue(1, ord('2'))         # 기간 기준
+                chart.SetInputValue(2, days + 1)         # 오늘 포함 N+1일 조회
+                chart.SetInputValue(3, ord('3'))         # 요청 필드: 저가
+                chart.SetInputValue(5, [3])              # 필드 코드: 저가
+                chart.SetInputValue(6, ord('D'))         # 일봉
+                chart.SetInputValue(9, ord('1'))         # 수정주가
+                chart.BlockRequest()
 
-                cnt = self.stock_chart.GetHeaderValue(3)
-                lows = [self.stock_chart.GetDataValue(0, i) for i in range(cnt)]
+                cnt = chart.GetHeaderValue(3)
+                lows = [chart.GetDataValue(0, i) for i in range(cnt)]
                 if len(lows) > 1:
                     return min(lows[1:days+1])  # 오늘 제외한 N일 중 최저가
                 return 0
             except Exception as e:
                 logging.error(f"N일저점 조회 오류({code}): {e}")
-                return 0            
+                return 0
 
     def place_order(self, stock_code, qty, price, is_buy=True) -> bool:
         logging.info(f"주문 요청: {stock_code} / 수량: {qty} / 가격: {price} / {'매수' if is_buy else '매도'}")
         try:
             with com_lock:
-                o = self.cp_order
+                o = win32com.client.Dispatch("CpTrade.CpTd0311")
                 o.SetInputValue(0, "2" if is_buy else "1")  # 1:매도, 2:매수
                 o.SetInputValue(1, self.account)
                 o.SetInputValue(2, self.acc_flag)
@@ -380,7 +386,7 @@ class CreonManager(QObject):
                 if ret != 0:
                     logging.error(f"주문 실패. 응답 코드: {ret}, 종목: {stock_code}, 수량: {qty}")
                     # 추가적인 오류 정보 조회
-                    msg = self.cp_cybos.GetDibStatus()
+                    msg = win32com.client.Dispatch("CpUtil.CpCybos").GetDibStatus()
                     if msg:
                         logging.error(f"주문 실패 메시지: {msg}")
                     return False
